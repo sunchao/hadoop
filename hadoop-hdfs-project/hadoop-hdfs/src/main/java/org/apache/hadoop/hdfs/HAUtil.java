@@ -144,14 +144,14 @@ public class HAUtil {
     }
     return null;
   }
-  
+
   /**
-   * Get the NN ID of the other node in an HA setup.
-   * 
+   * Get the NN IDs of all other nodes in an HA setup.
+   *
    * @param conf the configuration of this node
-   * @return the NN ID of the other node in this nameservice
+   * @return the NN IDs of all other nodes in this nameservice
    */
-  public static String getNameNodeIdOfOtherNode(Configuration conf, String nsId) {
+  public static List<String> getNameNodeIdOfOtherNodes(Configuration conf, String nsId) {
     Preconditions.checkArgument(nsId != null,
         "Could not determine namespace id. Please ensure that this " +
         "machine is one of the machines listed as a NN RPC address, " +
@@ -165,43 +165,59 @@ public class HAUtil {
         DFSUtil.addKeySuffixes(DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX,
             nsId),
         nsId);
-    Preconditions.checkArgument(nnIds.size() == 2,
-        "Expected exactly 2 NameNodes in namespace '%s'. " +
-        "Instead, got only %s (NN ids were '%s'",
-        nsId, nnIds.size(), Joiner.on("','").join(nnIds));
+    Preconditions.checkArgument(nnIds.size() >= 2,
+        "Expected at least 2 NameNodes in namespace '%s'. " +
+          "Instead, got only %s (NN ids were '%s')",
+          nsId, nnIds.size(), Joiner.on("','").join(nnIds));
     Preconditions.checkState(myNNId != null && !myNNId.isEmpty(),
         "Could not determine own NN ID in namespace '%s'. Please " +
         "ensure that this node is one of the machines listed as an " +
         "NN RPC address, or configure " + DFSConfigKeys.DFS_HA_NAMENODE_ID_KEY,
         nsId);
 
-    ArrayList<String> nnSet = Lists.newArrayList(nnIds);
-    nnSet.remove(myNNId);
-    assert nnSet.size() == 1;
-    return nnSet.get(0);
+    ArrayList<String> namenodes = Lists.newArrayList(nnIds);
+    namenodes.remove(myNNId);
+    assert namenodes.size() >= 1;
+    return namenodes;
   }
 
   /**
    * Given the configuration for this node, return a Configuration object for
    * the other node in an HA setup.
-   * 
+   *
    * @param myConf the configuration of this node
    * @return the configuration of the other node in an HA setup
    */
-  public static Configuration getConfForOtherNode(
+  public static Configuration getConfForOtherNode(Configuration myConf) {
+    List<Configuration> otherConfs = getConfForOtherNodes(myConf);
+    Preconditions.checkArgument(otherConfs.size() == 1,
+        "Expected to only find one other NN in the current HA setting,"
+            + " but got " + otherConfs.size() + ".");
+    return otherConfs.get(0);
+  }
+
+
+  /**
+   * Given the configuration for this node, return a Configuration object for
+   * all the other nodes in an HA setup.
+   *
+   * @param myConf the configuration of this node
+   * @return the configuration of all other nodes in an HA setup
+   */
+  public static List<Configuration> getConfForOtherNodes(
       Configuration myConf) {
-    
+
     String nsId = DFSUtil.getNamenodeNameServiceId(myConf);
-    String otherNn = getNameNodeIdOfOtherNode(myConf, nsId);
-    
-    // Look up the address of the active NN.
-    Configuration confForOtherNode = new Configuration(myConf);
-    // unset independent properties
-    for (String idpKey : HA_SPECIAL_INDEPENDENT_KEYS) {
-      confForOtherNode.unset(idpKey);
+    List<String> otherNn = getNameNodeIdOfOtherNodes(myConf, nsId);
+
+    // Look up the address of the other NNs
+    List<Configuration> confs = new ArrayList<Configuration>(otherNn.size());
+    for (String nn : otherNn) {
+      Configuration confForOtherNode = new Configuration(myConf);
+      NameNode.initializeGenericKeys(confForOtherNode, nsId, nn);
+      confs.add(confForOtherNode);
     }
-    NameNode.initializeGenericKeys(confForOtherNode, nsId, otherNn);
-    return confForOtherNode;
+    return confs;
   }
 
   /**
