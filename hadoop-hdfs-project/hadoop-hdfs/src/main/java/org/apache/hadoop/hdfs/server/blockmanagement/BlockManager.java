@@ -1503,6 +1503,7 @@ public class BlockManager implements BlockStatsMXBean {
    
   /** Remove the blocks associated to the given datanode. */
   void removeBlocksAssociatedTo(final DatanodeDescriptor node) {
+    providedStorageMap.removeDatanode(node);
     for (DatanodeStorageInfo storage : node.getStorageInfos()) {
       final Iterator<BlockInfo> it = storage.getBlockIterator();
       //add the BlockInfos to a new collection as the
@@ -2453,7 +2454,7 @@ public class BlockManager implements BlockStatsMXBean {
       // !#! Register DN with provided storage, not with storage owned by DN
       // !#! DN should still have a ref to the DNStorageInfo
       DatanodeStorageInfo storageInfo =
-          providedStorageMap.getStorage(node, storage);
+          providedStorageMap.getStorage(node, storage, context);
 
       if (storageInfo == null) {
         // We handle this for backwards compatibility.
@@ -2580,7 +2581,7 @@ public class BlockManager implements BlockStatsMXBean {
     }
   }
   
-  private Collection<Block> processReport(
+  Collection<Block> processReport(
       final DatanodeStorageInfo storageInfo,
       final BlockListAsLongs report,
       BlockReportContext context) throws IOException {
