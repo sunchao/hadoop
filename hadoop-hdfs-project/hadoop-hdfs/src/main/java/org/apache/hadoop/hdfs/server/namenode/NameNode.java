@@ -50,6 +50,7 @@ import org.apache.hadoop.hdfs.server.namenode.ha.ActiveState;
 import org.apache.hadoop.hdfs.server.namenode.ha.BootstrapStandby;
 import org.apache.hadoop.hdfs.server.namenode.ha.HAContext;
 import org.apache.hadoop.hdfs.server.namenode.ha.HAState;
+import org.apache.hadoop.hdfs.server.namenode.ha.ObserverState;
 import org.apache.hadoop.hdfs.server.namenode.ha.StandbyState;
 import org.apache.hadoop.hdfs.server.namenode.metrics.NameNodeMetrics;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
@@ -266,6 +267,7 @@ public class NameNode implements NameNodeStatusMXBean {
   
   private static final String USAGE = "Usage: hdfs namenode ["
       + StartupOption.BACKUP.getName() + "] | \n\t["
+      + StartupOption.OBSERVER.getName() + "] | \n\t["
       + StartupOption.CHECKPOINT.getName() + "] | \n\t["
       + StartupOption.FORMAT.getName() + " ["
       + StartupOption.CLUSTERID.getName() + " cid ] ["
@@ -329,6 +331,7 @@ public class NameNode implements NameNodeStatusMXBean {
       LoggerFactory.getLogger("BlockStateChange");
   public static final HAState ACTIVE_STATE = new ActiveState();
   public static final HAState STANDBY_STATE = new StandbyState();
+  public static final HAState OBSERVER_STATE = new ObserverState();
 
   private static final String NAMENODE_HTRACE_PREFIX = "namenode.htrace.";
 
@@ -931,9 +934,11 @@ public class NameNode implements NameNodeStatusMXBean {
   }
 
   protected HAState createHAState(StartupOption startOpt) {
-    if (!haEnabled || startOpt == StartupOption.UPGRADE 
+    if (!haEnabled || startOpt == StartupOption.UPGRADE
         || startOpt == StartupOption.UPGRADEONLY) {
       return ACTIVE_STATE;
+    } else if (startOpt == StartupOption.OBSERVER) {
+      return OBSERVER_STATE;
     } else {
       return STANDBY_STATE;
     }
@@ -1396,6 +1401,8 @@ public class NameNode implements NameNodeStatusMXBean {
         startOpt = StartupOption.BACKUP;
       } else if (StartupOption.CHECKPOINT.getName().equalsIgnoreCase(cmd)) {
         startOpt = StartupOption.CHECKPOINT;
+      } else if (StartupOption.OBSERVER.getName().equalsIgnoreCase(cmd)) {
+        startOpt = StartupOption.OBSERVER;
       } else if (StartupOption.UPGRADE.getName().equalsIgnoreCase(cmd)
           || StartupOption.UPGRADEONLY.getName().equalsIgnoreCase(cmd)) {
         startOpt = StartupOption.UPGRADE.getName().equalsIgnoreCase(cmd) ? 
@@ -1720,6 +1727,9 @@ public class NameNode implements NameNodeStatusMXBean {
     if (!haEnabled) {
       throw new ServiceFailedException("HA for namenode is not enabled");
     }
+    if (state == OBSERVER_STATE) {
+      throw new ServiceFailedException("Cannot transition from Observer to Active");
+    }
     state.setState(haContext, ACTIVE_STATE);
   }
   
@@ -1728,6 +1738,9 @@ public class NameNode implements NameNodeStatusMXBean {
     namesystem.checkSuperuserPrivilege();
     if (!haEnabled) {
       throw new ServiceFailedException("HA for namenode is not enabled");
+    }
+    if (state == STANDBY_STATE) {
+      throw new ServiceFailedException("Cannot transition from Observer to Standby");
     }
     state.setState(haContext, STANDBY_STATE);
   }
@@ -1786,12 +1799,11 @@ public class NameNode implements NameNodeStatusMXBean {
 
   @Override // NameNodeStatusMXBean
   public String getState() {
-    String servStateStr = "";
-    HAServiceState servState = getServiceState();
-    if (null != servState) {
-      servStateStr = servState.toString();
+    String stateStr = "";
+    if (state != null) {
+      stateStr = state.toString();
     }
-    return servStateStr;
+    return stateStr;
   }
 
   @Override // NameNodeStatusMXBean
@@ -1881,6 +1893,26 @@ public class NameNode implements NameNodeStatusMXBean {
     }
 
     @Override
+    public void startObserverServices() throws IOException {
+      try {
+        namesystem.startObserverState(conf);
+      } catch (Throwable t) {
+        doImmediateShutdown(t);
+      }
+    }
+
+    @Override
+    public void stopObserverServices() throws IOException {
+      try {
+        if (namesystem != null) {
+          namesystem.stopObserverServices();
+        }
+      } catch (Throwable t) {
+        doImmediateShutdown(t);
+      }
+    }
+
+    @Override
     public void prepareToStopStandbyServices() throws ServiceFailedException {
       try {
         namesystem.prepareToStopStandbyServices();
@@ -1929,9 +1961,13 @@ public class NameNode implements NameNodeStatusMXBean {
   public boolean isStandbyState() {
     return (state.equals(STANDBY_STATE));
   }
-  
+
   public boolean isActiveState() {
     return (state.equals(ACTIVE_STATE));
+  }
+
+  public boolean isObserverState() {
+    return state.equals(OBSERVER_STATE);
   }
 
   /**

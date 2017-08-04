@@ -18,12 +18,14 @@
 package org.apache.hadoop.hdfs.tools;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_INTERNAL_NAMESERVICES_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_BACKUP_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SECONDARY_HTTP_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICES;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_HA_OBSERVER_NAMENODES_KEY_PREFIX;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -40,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.StringTokenizer;
 
+import org.apache.commons.lang.ArrayUtils;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -60,9 +63,10 @@ import com.google.common.base.Joiner;
  */
 public class TestGetConf {
   enum TestType {
-    NAMENODE, BACKUP, SECONDARY, NNRPCADDRESSES
+    NAMENODE, OBSERVER, BACKUP, SECONDARY, NNRPCADDRESSES
   }
-  FileSystem localFileSys; 
+  FileSystem localFileSys;
+
   /** Setup federation nameServiceIds in the configuration */
   private void setupNameServices(HdfsConfiguration conf, int nameServiceIdCount) {
     StringBuilder nsList = new StringBuilder();
@@ -75,6 +79,29 @@ public class TestGetConf {
     conf.set(DFS_NAMESERVICES, nsList.toString());
   }
 
+  /**
+   * Setup namenodes specified by 'nnIds' for 'conf', for all
+   * 'nameServiceIdCount' nameservices.
+   * If 'onlyObserver' is true, this will use 'nnIds' as observer namenodes.
+   * Otherwise, it will use 'nnIds' as both ordinary and observer namenodes.
+   */
+  private void setupNameNodes(HdfsConfiguration conf, int nameServiceIdCount,
+      boolean onlyObserver, int[] nnIds) {
+    for (int c = 0; c < nameServiceIdCount; c++) {
+      StringBuilder nnList = new StringBuilder();
+      String confKey = onlyObserver ? DFS_HA_OBSERVER_NAMENODES_KEY_PREFIX
+          : DFS_HA_NAMENODES_KEY_PREFIX;
+      confKey = DFSUtil.addKeySuffixes(confKey, getNameServiceId(c));
+      for (int i = 0; i < nnIds.length; i++) {
+        if (i > 0) {
+          nnList.append(",");
+        }
+        nnList.append(getNameNodeId(c, nnIds[i]));
+      }
+      conf.set(confKey, nnList.toString());
+    }
+  }
+
   /** Set a given key with value as address, for all the nameServiceIds.
    * @param conf configuration to set the addresses in
    * @param key configuration key
@@ -83,13 +110,17 @@ public class TestGetConf {
    * @return list of addresses that are set in the configuration
    */
   private String[] setupAddress(HdfsConfiguration conf, String key,
-      int nameServiceIdCount, int portOffset) {
-    String[] values = new String[nameServiceIdCount];
-    for (int i = 0; i < nameServiceIdCount; i++, portOffset++) {
-      String nsID = getNameServiceId(i);
-      String specificKey = DFSUtil.addKeySuffixes(key, nsID);
-      values[i] = "nn" + i + ":" + portOffset;
-      conf.set(specificKey, values[i]);
+      int nameServiceIdCount, int portOffset, int[] nnIds) {
+    String[] values = new String[nameServiceIdCount * nnIds.length];
+    int count = 0;
+    for (int i = 0; i < nameServiceIdCount; i++) {
+      for (int n = 0; n < nnIds.length; n++) {
+        String nsID = getNameServiceId(i);
+        String nnID = getNameNodeId(i, nnIds[n]);
+        String specificKey = DFSUtil.addKeySuffixes(key, nsID, nnID);
+        values[count] = nnID + ":" + portOffset++;
+        conf.set(specificKey, values[count++]);
+      }
     }
     return values;
   }
@@ -98,9 +129,11 @@ public class TestGetConf {
    * Add namenodes to the static resolution list to avoid going
    * through DNS which can be really slow in some configurations.
    */
-  private void setupStaticHostResolution(int nameServiceIdCount) {
+  private void setupStaticHostResolution(int nameServiceIdCount, int[] nnIds) {
     for (int i = 0; i < nameServiceIdCount; i++) {
-      NetUtils.addStaticResolution("nn" + i, "localhost");
+      for (int n = 0; n < nnIds.length; n++) {
+        NetUtils.addStaticResolution(getNameNodeId(i, n), "localhost");
+      }
     }
   }
 
@@ -123,7 +156,9 @@ public class TestGetConf {
       TestType type, HdfsConfiguration conf) throws IOException {
     switch (type) {
     case NAMENODE:
-      return DFSUtil.getNNServiceRpcAddressesForCluster(conf);
+      return DFSUtil.getNNServiceRpcAddressesForClusterExcludingObservers(conf);
+    case OBSERVER:
+      return DFSUtil.getObserverNNServiceRpcAddressesForCluster(conf);
     case BACKUP:
       return DFSUtil.getBackupNodeAddresses(conf);
     case SECONDARY:
@@ -165,6 +200,9 @@ public class TestGetConf {
     switch (type) {
     case NAMENODE:
       args[0] = Command.NAMENODE.getName();
+      break;
+    case OBSERVER:
+      args[0] = Command.OBSERVER.getName();
       break;
     case BACKUP:
       args[0] = Command.BACKUP.getName();
@@ -238,6 +276,10 @@ public class TestGetConf {
     return "ns" + index;
   }
 
+  private static String getNameNodeId(int nsIndex, int nnIndex) {
+    return getNameServiceId(nsIndex) + "nn" + nnIndex;
+  }
+
   /**
    * Test empty configuration
    */
@@ -246,7 +288,8 @@ public class TestGetConf {
     HdfsConfiguration conf = new HdfsConfiguration(false);
     // Verify getting addresses fails
     getAddressListFromTool(TestType.NAMENODE, conf, false);
-    System.out.println(getAddressListFromTool(TestType.BACKUP, conf, false));
+    getAddressListFromTool(TestType.OBSERVER, conf, false);
+    getAddressListFromTool(TestType.BACKUP, conf, false);
     getAddressListFromTool(TestType.SECONDARY, conf, false);
     getAddressListFromTool(TestType.NNRPCADDRESSES, conf, false);
     for (Command cmd : Command.values()) {
@@ -283,8 +326,9 @@ public class TestGetConf {
     // Returned namenode address should match default address
     conf.set(FS_DEFAULT_NAME_KEY, "hdfs://localhost:1000");
     verifyAddresses(conf, TestType.NAMENODE, false, "localhost:1000");
+    verifyAddresses(conf, TestType.OBSERVER, false, "localhost:1000");
     verifyAddresses(conf, TestType.NNRPCADDRESSES, true, "localhost:1000");
-  
+
     // Returned address should match backupnode RPC address
     conf.set(DFS_NAMENODE_BACKUP_ADDRESS_KEY,"localhost:1001");
     verifyAddresses(conf, TestType.BACKUP, false, "localhost:1001");
@@ -320,35 +364,66 @@ public class TestGetConf {
     // returned from federation configuration. Returned namenode addresses are
     // based on service RPC address and not regular RPC address
     setupNameServices(conf, nsCount);
-    String[] nnAddresses = setupAddress(conf,
-        DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY, nsCount, 1000);
-    setupAddress(conf, DFS_NAMENODE_RPC_ADDRESS_KEY, nsCount, 1500);
-    setupStaticHostResolution(nsCount);
+    int[] namenodes = { 0, 1 };
+    int[] observers = { 2, 3 };
+    int[] allNameNodes = new int[namenodes.length + observers.length];
+    System.arraycopy(namenodes, 0, allNameNodes, 0, 2);
+    System.arraycopy(observers, 0, allNameNodes, 2, 2);
+
+    setupNameNodes(conf, nsCount, false, allNameNodes);
+    setupNameNodes(conf, nsCount, true, observers);
+    setupStaticHostResolution(nsCount, allNameNodes);
+    String[] namenodeAddresses = setupAddress(conf,
+        DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY, nsCount, 1000, namenodes);
+    String[] observerAddresses = setupAddress(conf,
+        DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY, nsCount, 1100, observers);
+    String[] allNameNodeAddresses = new String[namenodeAddresses.length + observerAddresses.length];
+    System.arraycopy(namenodeAddresses, 0,
+        allNameNodeAddresses, 0, namenodeAddresses.length);
+    System.arraycopy(observerAddresses, 0,
+        allNameNodeAddresses, namenodeAddresses.length, observerAddresses.length);
+
+    setupAddress(conf, DFS_NAMENODE_RPC_ADDRESS_KEY, nsCount, 1500, allNameNodes);
     String[] backupAddresses = setupAddress(conf,
-        DFS_NAMENODE_BACKUP_ADDRESS_KEY, nsCount, 2000);
+        DFS_NAMENODE_BACKUP_ADDRESS_KEY, nsCount, 2000, namenodes);
     String[] secondaryAddresses = setupAddress(conf,
-        DFS_NAMENODE_SECONDARY_HTTP_ADDRESS_KEY, nsCount, 3000);
-    verifyAddresses(conf, TestType.NAMENODE, false, nnAddresses);
+        DFS_NAMENODE_SECONDARY_HTTP_ADDRESS_KEY, nsCount, 3000, namenodes);
+
+    verifyAddresses(conf, TestType.NAMENODE, false, namenodeAddresses);
+    verifyAddresses(conf, TestType.OBSERVER, false, observerAddresses);
     verifyAddresses(conf, TestType.BACKUP, false, backupAddresses);
     verifyAddresses(conf, TestType.SECONDARY, false, secondaryAddresses);
-    verifyAddresses(conf, TestType.NNRPCADDRESSES, true, nnAddresses);
-  
+    verifyAddresses(conf, TestType.NNRPCADDRESSES, true, allNameNodeAddresses);
+
     // Test to ensure namenode, backup, secondary namenode addresses and 
-    // namenode rpc addresses are  returned from federation configuration. 
+    // namenode rpc addresses are returned from federation configuration.
     // Returned namenode addresses are based on regular RPC address
     // in the absence of service RPC address.
     conf = new HdfsConfiguration(false);
     setupNameServices(conf, nsCount);
-    nnAddresses = setupAddress(conf,
-        DFS_NAMENODE_RPC_ADDRESS_KEY, nsCount, 1000);
+    setupNameNodes(conf, nsCount, false, allNameNodes);
+    setupNameNodes(conf, nsCount, true, observers);
+    namenodeAddresses = setupAddress(conf,
+        DFS_NAMENODE_RPC_ADDRESS_KEY, nsCount, 1000, namenodes);
+    observerAddresses = setupAddress(conf,
+        DFS_NAMENODE_RPC_ADDRESS_KEY, nsCount, 1100, observers);
+    System.arraycopy(namenodeAddresses, 0,
+        allNameNodeAddresses, 0, namenodeAddresses.length);
+    System.arraycopy(observerAddresses, 0,
+        allNameNodeAddresses, namenodeAddresses.length, observerAddresses.length);
+
     backupAddresses = setupAddress(conf,
-        DFS_NAMENODE_BACKUP_ADDRESS_KEY, nsCount, 2000);
+        DFS_NAMENODE_BACKUP_ADDRESS_KEY, nsCount, 2000, namenodes);
     secondaryAddresses = setupAddress(conf,
-        DFS_NAMENODE_SECONDARY_HTTP_ADDRESS_KEY, nsCount, 3000);
-    verifyAddresses(conf, TestType.NAMENODE, false, nnAddresses);
+        DFS_NAMENODE_SECONDARY_HTTP_ADDRESS_KEY, nsCount, 3000, namenodes);
+
+    verifyAddresses(conf, TestType.NAMENODE, false, namenodeAddresses);
+
+
+    verifyAddresses(conf, TestType.OBSERVER, false, observerAddresses);
     verifyAddresses(conf, TestType.BACKUP, false, backupAddresses);
     verifyAddresses(conf, TestType.SECONDARY, false, secondaryAddresses);
-    verifyAddresses(conf, TestType.NNRPCADDRESSES, true, nnAddresses);
+    verifyAddresses(conf, TestType.NNRPCADDRESSES, true, allNameNodeAddresses);
   }
   
   @Test(timeout=10000)
@@ -386,6 +461,7 @@ public class TestGetConf {
       }
     }
   }
+
   @Test
   public void TestGetConfExcludeCommand() throws Exception{
   	HdfsConfiguration conf = new HdfsConfiguration();
@@ -431,15 +507,16 @@ public class TestGetConf {
   @Test
   public void testIncludeInternalNameServices() throws Exception {
     final int nsCount = 10;
-    final int remoteNsCount = 4;
     HdfsConfiguration conf = new HdfsConfiguration();
     setupNameServices(conf, nsCount);
-    setupAddress(conf, DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY, nsCount, 1000);
-    setupAddress(conf, DFS_NAMENODE_RPC_ADDRESS_KEY, nsCount, 1500);
+    int[] namenodes = { 0 , 1 };
+    setupNameNodes(conf, nsCount, false, namenodes);
+    setupStaticHostResolution(nsCount, namenodes);
+    setupAddress(conf, DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY, nsCount, 1000, namenodes);
+    setupAddress(conf, DFS_NAMENODE_RPC_ADDRESS_KEY, nsCount, 1500, namenodes);
     conf.set(DFS_INTERNAL_NAMESERVICES_KEY, "ns1");
-    setupStaticHostResolution(nsCount);
 
-    String[] includedNN = new String[] {"nn1:1001"};
+    String[] includedNN = new String[] { "ns1nn0:1002", "ns1nn1:1003" };
     verifyAddresses(conf, TestType.NAMENODE, false, includedNN);
     verifyAddresses(conf, TestType.NNRPCADDRESSES, true, includedNN);
   }

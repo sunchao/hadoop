@@ -35,6 +35,7 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICE_ID;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_KEYPASSWORD_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_KEYSTORE_PASSWORD_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_TRUSTSTORE_PASSWORD_KEY;
+import static org.apache.hadoop.hdfs.DFSUtilClient.NameNodeType;
 
 import java.io.IOException;
 import java.io.PrintStream;
@@ -482,17 +483,23 @@ public class DFSUtil {
   /**
    * Returns list of InetSocketAddresses corresponding to namenodes from the
    * configuration.
-   * 
+   *
    * Returns namenode address specifically configured for datanodes (using
    * service ports), if found. If not, regular RPC address configured for other
    * clients is returned.
-   * 
+   *
    * @param conf configuration
    * @return list of InetSocketAddress
    * @throws IOException on error
    */
   public static Map<String, Map<String, InetSocketAddress>> getNNServiceRpcAddresses(
       Configuration conf) throws IOException {
+    return getNNServiceRpcAddressesInternal(conf, NameNodeType.NAMENODE);
+  }
+
+  private static Map<String, Map<String, InetSocketAddress>>
+  getNNServiceRpcAddressesInternal(Configuration conf, NameNodeType type)
+      throws IOException {
     // Use default address as fall back
     String defaultAddress;
     try {
@@ -503,9 +510,9 @@ public class DFSUtil {
     }
     
     Map<String, Map<String, InetSocketAddress>> addressList =
-      DFSUtilClient.getAddresses(conf, defaultAddress,
-                                 DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY,
-                                 DFS_NAMENODE_RPC_ADDRESS_KEY);
+      DFSUtilClient.getAddressesInternal(conf, defaultAddress, type,
+                                         DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY,
+                                         DFS_NAMENODE_RPC_ADDRESS_KEY);
     if (addressList.isEmpty()) {
       throw new IOException("Incorrect configuration: namenode address "
           + DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY + " or "  
@@ -515,21 +522,9 @@ public class DFSUtil {
     return addressList;
   }
 
-  /**
-   * Returns list of InetSocketAddresses corresponding to the namenode
-   * that manages this cluster. Note this is to be used by datanodes to get
-   * the list of namenode addresses to talk to.
-   *
-   * Returns namenode address specifically configured for datanodes (using
-   * service ports), if found. If not, regular RPC address configured for other
-   * clients is returned.
-   *
-   * @param conf configuration
-   * @return list of InetSocketAddress
-   * @throws IOException on error
-   */
-  public static Map<String, Map<String, InetSocketAddress>>
-    getNNServiceRpcAddressesForCluster(Configuration conf) throws IOException {
+  private static Map<String, Map<String, InetSocketAddress>> getNNServiceRpcAddressesInternal(
+      Configuration conf, Collection<String> parentNameServices,
+      NameNodeType type) throws IOException {
     // Use default address as fall back
     String defaultAddress;
     try {
@@ -539,29 +534,12 @@ public class DFSUtil {
       defaultAddress = null;
     }
 
-    Collection<String> parentNameServices = conf.getTrimmedStringCollection
-            (DFSConfigKeys.DFS_INTERNAL_NAMESERVICES_KEY);
-
-    if (parentNameServices.isEmpty()) {
-      parentNameServices = conf.getTrimmedStringCollection
-              (DFSConfigKeys.DFS_NAMESERVICES);
-    } else {
-      // Ensure that the internal service is ineed in the list of all available
-      // nameservices.
-      Set<String> availableNameServices = Sets.newHashSet(conf
-              .getTrimmedStringCollection(DFSConfigKeys.DFS_NAMESERVICES));
-      for (String nsId : parentNameServices) {
-        if (!availableNameServices.contains(nsId)) {
-          throw new IOException("Unknown nameservice: " + nsId);
-        }
-      }
-    }
-
     Map<String, Map<String, InetSocketAddress>> addressList =
-            DFSUtilClient.getAddressesForNsIds(conf, parentNameServices,
-                                               defaultAddress,
-                                               DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY,
-                                               DFS_NAMENODE_RPC_ADDRESS_KEY);
+            DFSUtilClient.getAddressesForNsIdsInternal(conf, parentNameServices,
+                                                       defaultAddress,
+                                                       type,
+                                                       DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY,
+                                                       DFS_NAMENODE_RPC_ADDRESS_KEY);
     if (addressList.isEmpty()) {
       throw new IOException("Incorrect configuration: namenode address "
               + DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY + " or "
@@ -569,6 +547,66 @@ public class DFSUtil {
               + " is not configured.");
     }
     return addressList;
+  }
+
+  /**
+   * Returns list of InetSocketAddresses corresponding to the namenodes (excluding
+   * observer namenodes) that manages this cluster.
+   *
+   * Returns namenode addresses, excluding those for observer namenodes, specifically
+   * configured for datanodes (using service ports), if found. If not, regular RPC
+   * address configured for other clients is returned.
+   *
+   * @param conf configuration
+   * @return list of InetSocketAddress
+   * @throws IOException on error
+   */
+  public static Map<String, Map<String, InetSocketAddress>>
+  getNNServiceRpcAddressesForClusterExcludingObservers(Configuration conf) throws IOException {
+    return getNNServiceRpcAddressesForClusterInternal(
+        conf, NameNodeType.NAMENODE);
+  }
+
+  /**
+   * Returns list of InetSocketAddresses for observer namenodes.
+   *
+   * Returns observer namenodes' addresses specifically configured for datanodes (using
+   * service ports), if found. If not, regular RPC address configured for other
+   * clients is returned.
+   *
+   * @param conf configuration
+   * @return list of InetSocketAddress
+   * @throws IOException on error
+   */
+  public static Map<String, Map<String, InetSocketAddress>>
+  getObserverNNServiceRpcAddressesForCluster(Configuration conf) throws IOException {
+    return getNNServiceRpcAddressesForClusterInternal(
+        conf, NameNodeType.OBSERVER);
+  }
+
+  /**
+   * Returns list of InetSocketAddresses corresponding to both the ordinary namenodes
+   * and observer namenodes.
+   *
+   * Returns namenode addresses specifically configured for datanodes (using
+   * service ports), if found. If not, regular RPC address configured for other
+   * clients is returned.
+   *
+   * @param conf configuration
+   * @return list of InetSocketAddress
+   * @throws IOException on error
+   */
+  public static Map<String, Map<String, InetSocketAddress>>
+  getNNServiceRpcAddressesForCluster(Configuration conf) throws IOException {
+    return getNNServiceRpcAddressesForClusterInternal(
+        conf, NameNodeType.ALL);
+  }
+
+  private static Map<String, Map<String, InetSocketAddress>>
+  getNNServiceRpcAddressesForClusterInternal(
+      Configuration conf, NameNodeType type) throws IOException {
+    Collection<String> parentNameServices = getNameServiceIdsForCluster(conf);
+    return getNNServiceRpcAddressesInternal(conf, parentNameServices, type);
   }
 
   /**
@@ -582,27 +620,37 @@ public class DFSUtil {
   public static Map<String, Map<String, InetSocketAddress>>
       getNNLifelineRpcAddressesForCluster(Configuration conf)
       throws IOException {
+    Collection<String> parentNameServices = getNameServiceIdsForCluster(conf);
+    return DFSUtilClient.getAddressesForNsIds(conf, parentNameServices, null,
+        DFS_NAMENODE_LIFELINE_RPC_ADDRESS_KEY);
+  }
 
-    Collection<String> parentNameServices = conf.getTrimmedStringCollection(
-        DFSConfigKeys.DFS_INTERNAL_NAMESERVICES_KEY);
-
-    if (parentNameServices.isEmpty()) {
-      parentNameServices = conf.getTrimmedStringCollection(
+  /**
+   * Returns a collection of nameservices for this cluster.
+   *
+   * @param conf configuration
+   * @return a collection of nameservices
+   * @throws IOException on error
+   */
+  private static Collection<String> getNameServiceIdsForCluster(Configuration conf)
+      throws IOException {
+    Collection<String> nameServices = conf.getTrimmedStringCollection
+        (DFSConfigKeys.DFS_INTERNAL_NAMESERVICES_KEY);
+    if (nameServices.isEmpty()) {
+      nameServices = conf.getTrimmedStringCollection(
           DFSConfigKeys.DFS_NAMESERVICES);
     } else {
       // Ensure that the internal service is indeed in the list of all available
       // nameservices.
       Set<String> availableNameServices = Sets.newHashSet(conf
           .getTrimmedStringCollection(DFSConfigKeys.DFS_NAMESERVICES));
-      for (String nsId : parentNameServices) {
+      for (String nsId : nameServices) {
         if (!availableNameServices.contains(nsId)) {
           throw new IOException("Unknown nameservice: " + nsId);
         }
       }
     }
-
-    return DFSUtilClient.getAddressesForNsIds(conf, parentNameServices, null,
-        DFS_NAMENODE_LIFELINE_RPC_ADDRESS_KEY);
+    return nameServices;
   }
 
   /**
@@ -1089,13 +1137,12 @@ public class DFSUtil {
     String nameserviceId = null;
     String namenodeId = null;
     int found = 0;
-    
     Collection<String> nsIds = DFSUtilClient.getNameServiceIds(conf);
     for (String nsId : DFSUtilClient.emptyAsSingletonNull(nsIds)) {
       if (knownNsId != null && !knownNsId.equals(nsId)) {
         continue;
       }
-      
+
       Collection<String> nnIds = DFSUtilClient.getNameNodeIds(conf, nsId);
       for (String nnId : DFSUtilClient.emptyAsSingletonNull(nnIds)) {
         if (LOG.isTraceEnabled()) {

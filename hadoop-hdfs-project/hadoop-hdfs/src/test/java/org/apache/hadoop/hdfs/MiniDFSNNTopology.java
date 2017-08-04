@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -50,13 +51,12 @@ public class MiniDFSNNTopology {
           .setHttpPort(nameNodeHttpPort)
           .setIpcPort(nameNodePort)));
   }
-  
 
   /**
    * Set up an HA topology with a single HA nameservice.
    */
   public static MiniDFSNNTopology simpleHATopology() {
-    return simpleHATopology(2);
+    return simpleHATopology(2, 0);
   }
 
   /**
@@ -64,12 +64,23 @@ public class MiniDFSNNTopology {
    * @param nnCount of namenodes to use with the nameservice
    */
   public static MiniDFSNNTopology simpleHATopology(int nnCount) {
+    return simpleHATopology(nnCount, 0);
+  }
+
+  /**
+   * Set up an HA topology with a single HA nameservice.
+   * @param nnCount of namenodes to use with the nameservice
+   * @param obCount of observers to use with the nameservice
+   */
+  public static MiniDFSNNTopology simpleHATopology(int nnCount, int obCount) {
     MiniDFSNNTopology.NSConf nameservice = new MiniDFSNNTopology.NSConf("minidfs-ns");
     for (int i = 1; i <= nnCount; i++) {
       nameservice.addNN(new MiniDFSNNTopology.NNConf("nn" + i));
     }
-    MiniDFSNNTopology topology = new MiniDFSNNTopology().addNameservice(nameservice);
-    return topology;
+    for (int i = 1; i <= obCount; i++) {
+      nameservice.addNN(new MiniDFSNNTopology.NNConf("ob" + i));
+    }
+    return new MiniDFSNNTopology().addNameservice(nameservice);
   }
 
   /**
@@ -131,11 +142,30 @@ public class MiniDFSNNTopology {
   }
 
   public int countNameNodes() {
+    return countInternal(false);
+  }
+
+  public int countObservers() {
+    return countInternal(true);
+  }
+
+  private int countInternal(boolean observer) {
     int count = 0;
     for (NSConf ns : nameservices) {
-      count += ns.nns.size();
+      for (NNConf nn : ns.getNNs()) {
+        if (observer == nn.getIsObserver()) {
+          count++;
+        }
+      }
     }
     return count;
+  }
+
+  /**
+   * Count all namenodes, including both ordinary and observer namenodes
+   */
+  public int countAllNameNodes() {
+    return countNameNodes() + countObservers();
   }
   
   public NNConf getOnlyNameNode() {
@@ -198,7 +228,7 @@ public class MiniDFSNNTopology {
   public static class NSConf {
     private final String id;
     private final List<NNConf> nns = Lists.newArrayList();
-    
+
     public NSConf(String id) {
       this.id = id;
     }
@@ -222,6 +252,7 @@ public class MiniDFSNNTopology {
     private int httpPort;
     private int ipcPort;
     private String clusterId;
+    private boolean isObserver;
     
     public NNConf(String nnId) {
       this.nnId = nnId;
@@ -243,6 +274,10 @@ public class MiniDFSNNTopology {
       return clusterId;
     }
 
+    boolean getIsObserver() {
+      return isObserver;
+    }
+
     public NNConf setHttpPort(int httpPort) {
       this.httpPort = httpPort;
       return this;
@@ -255,6 +290,11 @@ public class MiniDFSNNTopology {
 
     public NNConf setClusterId(String clusterId) {
       this.clusterId = clusterId;
+      return this;
+    }
+
+    public NNConf setIsObserver() {
+      this.isObserver = true;
       return this;
     }
   }

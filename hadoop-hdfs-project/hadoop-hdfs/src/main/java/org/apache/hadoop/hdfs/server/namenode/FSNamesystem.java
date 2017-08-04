@@ -519,7 +519,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   private final ReentrantLock cpLock;
 
   /**
-   * Used when this NN is in standby state to read from the shared edit log.
+   * Used when this NN is in standby or observer state to read from the shared edit log.
    */
   private EditLogTailer editLogTailer = null;
 
@@ -1324,7 +1324,6 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       // During startup, we're already open for read.
       getFSImage().editLog.initSharedJournalsForRead();
     }
-    
     blockManager.setPostponeBlocksFromFuture(true);
 
     // Disable quota checks while in standby.
@@ -1335,6 +1334,24 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       standbyCheckpointer = new StandbyCheckpointer(conf, this);
       standbyCheckpointer.start();
     }
+  }
+
+  /**
+   * Start services required in observer state
+   *
+   * @throws IOException
+   */
+  void startObserverState(final Configuration conf) throws IOException {
+    LOG.info("Starting services required for observer state");
+    if (!getFSImage().editLog.isOpenForRead()) {
+      // During startup, we're already open for read.
+      getFSImage().editLog.initSharedJournalsForRead();
+    }
+
+    blockManager.setPostponeBlocksFromFuture(true);
+    dir.disableQuotaChecks();
+    editLogTailer = new EditLogTailer(this, conf);
+    editLogTailer.start();
   }
 
   /**
@@ -1373,7 +1390,18 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       getFSImage().editLog.close();
     }
   }
-  
+
+  /** Stop services required in observer state */
+  void stopObserverServices() throws IOException {
+    LOG.info("Stopping services started for observer state");
+    if (editLogTailer != null) {
+      editLogTailer.stop();
+    }
+    if (dir != null && getFSImage() != null && getFSImage().editLog != null) {
+      getFSImage().editLog.close();
+    }
+  }
+
   @Override
   public void checkOperation(OperationCategory op) throws StandbyException {
     if (haContext != null) {

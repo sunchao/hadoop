@@ -48,7 +48,7 @@ public class RemoteNameNodeInfo {
     if (nsId == null) {
       return Collections.emptyList();
     }
-    List<Configuration> otherNodes = HAUtil.getConfForOtherNodes(conf);
+    List<Configuration> otherNodes = HAUtil.getConfForOtherNodes(conf, true);
     List<RemoteNameNodeInfo> nns = new ArrayList<RemoteNameNodeInfo>();
 
     for (Configuration otherNode : otherNodes) {

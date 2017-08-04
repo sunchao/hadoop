@@ -35,6 +35,18 @@ echo "Stopping namenodes on [$NAMENODES]"
   --script "$bin/hdfs" stop namenode
 
 #---------------------------------------------------------
+# observers
+
+OBSERVERS=$($HADOOP_PREFIX/bin/hdfs getconf -observers)
+
+echo "Stopping observer namenodes on [$OBSERVERS]"
+
+"$HADOOP_PREFIX/sbin/hadoop-daemons.sh" \
+  --config "$HADOOP_CONF_DIR" \
+  --hostnames "$OBSERVERS" \
+  --script "$bin/hdfs" stop namenode
+
+#---------------------------------------------------------
 # datanodes (using default slaves file)
 
 if [ -n "$HADOOP_SECURE_DN_USER" ]; then

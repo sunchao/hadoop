@@ -82,6 +82,7 @@ import org.junit.Test;
 
 import com.google.common.collect.Sets;
 
+// TODO: add more tests for observer namenodes.
 public class TestDFSUtil {
 
   static final String NS1_NN_ADDR    = "ns1-nn.example.com:9820";
@@ -1019,13 +1020,13 @@ public class TestDFSUtil {
     }
 
     Map<String, Map<String, InetSocketAddress>> nnMap = DFSUtil
-            .getNNServiceRpcAddressesForCluster(conf);
+            .getNNServiceRpcAddressesForClusterExcludingObservers(conf);
     assertEquals(1, nnMap.size());
     assertTrue(nnMap.containsKey("nn1"));
 
     conf.set(DFS_INTERNAL_NAMESERVICES_KEY, "nn3");
     try {
-      DFSUtil.getNNServiceRpcAddressesForCluster(conf);
+      DFSUtil.getNNServiceRpcAddressesForClusterExcludingObservers(conf);
       fail("Should fail for misconfiguration");
     } catch (IOException ignored) {
     }

@@ -44,6 +44,7 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants.RollingUpgradeAction;
 import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenSelector;
+import org.apache.hadoop.hdfs.server.namenode.ha.ReadOnly;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
 import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.Text;
@@ -124,6 +125,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly
   LocatedBlocks getBlockLocations(String src, long offset, long length)
       throws IOException;
 
@@ -133,6 +135,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly
   FsServerDefaults getServerDefaults() throws IOException;
 
   /**
@@ -265,6 +268,7 @@ public interface ClientProtocol {
    * @return All the in-use block storage policies currently.
    */
   @Idempotent
+  @ReadOnly
   BlockStoragePolicy[] getStoragePolicies() throws IOException;
 
   /**
@@ -307,6 +311,7 @@ public interface ClientProtocol {
    *           If file/dir <code>src</code> is not found
    */
   @Idempotent
+  @ReadOnly
   BlockStoragePolicy getStoragePolicy(String path) throws IOException;
 
   /**
@@ -437,6 +442,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly
   LocatedBlock getAdditionalDatanode(final String src,
       final long fileId, final ExtendedBlock blk,
       final DatanodeInfo[] existings,
@@ -671,6 +677,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly
   DirectoryListing getListing(String src, byte[] startAfter,
       boolean needLocation) throws IOException;
 
@@ -681,6 +688,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly
   SnapshottableDirectoryStatus[] getSnapshottableDirListing()
       throws IOException;
 
@@ -752,6 +760,7 @@ public interface ClientProtocol {
    * actual numbers to index into the array.
    */
   @Idempotent
+  @ReadOnly
   long[] getStats() throws IOException;
 
   /**
@@ -780,6 +789,7 @@ public interface ClientProtocol {
    *           a symlink.
    */
   @Idempotent
+  @ReadOnly
   long getPreferredBlockSize(String filename)
       throws IOException;
 
@@ -919,6 +929,7 @@ public interface ClientProtocol {
    * cookie returned from the previous call.
    */
   @Idempotent
+  @ReadOnly
   CorruptFileBlocks listCorruptFileBlocks(String path, String cookie)
       throws IOException;
 
@@ -954,6 +965,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly
   HdfsFileStatus getFileInfo(String src) throws IOException;
 
   /**
@@ -968,6 +980,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly
   boolean isFileClosed(String src) throws IOException;
 
   /**
@@ -997,6 +1010,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly
   ContentSummary getContentSummary(String path) throws IOException;
 
   /**
@@ -1109,6 +1123,7 @@ public interface ClientProtocol {
    *           or an I/O error occurred
    */
   @Idempotent
+  @ReadOnly
   String getLinkTarget(String path) throws IOException;
 
   /**
@@ -1379,6 +1394,7 @@ public interface ClientProtocol {
    * Gets the ACLs of files and directories.
    */
   @Idempotent
+  @ReadOnly
   AclStatus getAclStatus(String src) throws IOException;
 
   /**
@@ -1392,6 +1408,7 @@ public interface ClientProtocol {
    * Get the encryption zone for a path.
    */
   @Idempotent
+  @ReadOnly
   EncryptionZone getEZForPath(String src)
     throws IOException;
 
@@ -1403,6 +1420,7 @@ public interface ClientProtocol {
    * @return Batch of encryption zones.
    */
   @Idempotent
+  @ReadOnly
   BatchedEntries<EncryptionZone> listEncryptionZones(
       long prevId) throws IOException;
 
@@ -1436,6 +1454,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly
   List<XAttr> getXAttrs(String src, List<XAttr> xAttrs)
       throws IOException;
 
@@ -1451,6 +1470,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly
   List<XAttr> listXAttrs(String src)
       throws IOException;
 
@@ -1513,6 +1533,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly
   QuotaUsage getQuotaUsage(String path) throws IOException;
 
   /**

@@ -19,6 +19,7 @@ package org.apache.hadoop.hdfs.server.namenode.ha;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_HA_OBSERVER_NAMENODES_KEY_PREFIX;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -40,6 +41,7 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.client.HdfsAdmin;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
@@ -169,7 +171,7 @@ public abstract class HATestUtil {
       Configuration conf, String logicalName) {
     setFailoverConfigurations(cluster, conf, logicalName, 0);
   }
-  
+
   /** Sets the required configurations for performing failover.  */
   public static void setFailoverConfigurations(MiniDFSCluster cluster,
       Configuration conf, String logicalName, int nsIndex) {
@@ -178,12 +180,31 @@ public abstract class HATestUtil {
     for (MiniDFSCluster.NameNodeInfo nn : nns) {
       nnAddresses.add(nn.nameNode.getNameNodeAddress());
     }
-    setFailoverConfigurations(conf, logicalName, nnAddresses);
+    int nnSize = nnAddresses.size();
+    setFailoverConfigurations(conf, logicalName, nnSize, nnAddresses);
+  }
+
+  /** Sets the required configurations for performing failover.  */
+  public static void setFailoverConfigurations(MiniDFSCluster cluster,
+      Configuration conf, String logicalName, int nsIndex, boolean includeObservers) {
+    MiniDFSCluster.NameNodeInfo[] nns = cluster.getNameNodeInfos(nsIndex);
+    List<InetSocketAddress> nnAddresses = new ArrayList<InetSocketAddress>(3);
+    for (MiniDFSCluster.NameNodeInfo nn : nns) {
+      nnAddresses.add(nn.nameNode.getNameNodeAddress());
+    }
+    int nnSize = nnAddresses.size();
+    if (includeObservers) {
+      MiniDFSCluster.NameNodeInfo[] obs = cluster.getObserverNameNodeInfos(nsIndex);
+      for (MiniDFSCluster.NameNodeInfo ob : obs) {
+        nnAddresses.add(ob.nameNode.getNameNodeAddress());
+      }
+    }
+    setFailoverConfigurations(conf, logicalName, nnSize, nnAddresses);
   }
 
   public static void setFailoverConfigurations(Configuration conf, String logicalName,
       InetSocketAddress ... nnAddresses){
-    setFailoverConfigurations(conf, logicalName, Arrays.asList(nnAddresses));
+    setFailoverConfigurations(conf, logicalName, nnAddresses.length, Arrays.asList(nnAddresses));
   }
 
   /**
@@ -191,7 +212,15 @@ public abstract class HATestUtil {
    */
   public static void setFailoverConfigurations(Configuration conf,
       String logicalName, List<InetSocketAddress> nnAddresses) {
-    setFailoverConfigurations(conf, logicalName,
+    setFailoverConfigurations(conf, logicalName, nnAddresses.size(), nnAddresses);
+  }
+
+  /**
+   * Sets the required configurations for performing failover
+   */
+  public static void setFailoverConfigurations(Configuration conf,
+      String logicalName, int nnSize, List<InetSocketAddress> nnAddresses) {
+    setFailoverConfigurations(conf, logicalName, nnSize,
         Iterables.transform(nnAddresses, new Function<InetSocketAddress, String>() {
 
           // transform the inet address to a simple string
@@ -202,22 +231,60 @@ public abstract class HATestUtil {
         }));
   }
 
-  public static void setFailoverConfigurations(Configuration conf, String logicalName,
-      Iterable<String> nnAddresses) {
+  /**
+   * Set configuration 'conf' for failover. 'nnSize' is the number of
+   * active/standby NNs in the cluster, while 'nnAddresses' contains
+   * active/standby/observer NNs.
+   *
+   * Precondition: 'nnAddresses.size()' >= 'nnSize'
+   */
+  public static void setFailoverConfigurations(Configuration conf,
+      String logicalName, int nnSize, Iterable<String> nnAddresses) {
     List<String> nnids = new ArrayList<String>();
+    List<String> obids = new ArrayList<>();
     int i = 0;
     for (String address : nnAddresses) {
       String nnId = "nn" + (i + 1);
       nnids.add(nnId);
+      if (i >= nnSize) {
+        obids.add(nnId);
+      }
       conf.set(DFSUtil.addKeySuffixes(DFS_NAMENODE_RPC_ADDRESS_KEY, logicalName, nnId), address);
       i++;
     }
     conf.set(DFSConfigKeys.DFS_NAMESERVICES, logicalName);
     conf.set(DFSUtil.addKeySuffixes(DFS_HA_NAMENODES_KEY_PREFIX, logicalName),
         Joiner.on(',').join(nnids));
+    if (obids.size() != 0) {
+      conf.set(DFSUtil.addKeySuffixes(DFS_HA_OBSERVER_NAMENODES_KEY_PREFIX, logicalName),
+          Joiner.on(',').join(obids));
+    }
     conf.set(HdfsClientConfigKeys.Failover.PROXY_PROVIDER_KEY_PREFIX + "." + logicalName,
         ConfiguredFailoverProxyProvider.class.getName());
     conf.set("fs.defaultFS", "hdfs://" + logicalName);
+  }
+
+  public static DistributedFileSystem configureStaleReadFs(
+          MiniDFSCluster cluster, Configuration conf,
+          int nsIndex) throws IOException, URISyntaxException {
+    conf = new Configuration(conf);
+    String logicalName = getLogicalHostname(cluster);
+    setFailoverConfigurations(cluster, conf, logicalName, nsIndex, true);
+    conf.set(HdfsClientConfigKeys.Failover.PROXY_PROVIDER_KEY_PREFIX + "." + logicalName,
+        StaleReadProxyProvider.class.getName());
+    FileSystem fs = FileSystem.get(new URI("hdfs://" + logicalName), conf);
+    return (DistributedFileSystem) fs;
+  }
+
+  public static HdfsAdmin getStaleReadAdmin(
+          MiniDFSCluster cluster, Configuration conf,
+          int nsIndex) throws IOException, URISyntaxException {
+    conf = new Configuration(conf);
+    String logicalName = getLogicalHostname(cluster);
+    setFailoverConfigurations(cluster, conf, logicalName, nsIndex, true);
+    conf.set(HdfsClientConfigKeys.Failover.PROXY_PROVIDER_KEY_PREFIX + "." + logicalName,
+        StaleReadProxyProvider.class.getName());
+    return new HdfsAdmin(new URI("hdfs://" + logicalName), conf);
   }
 
   public static String getLogicalHostname(MiniDFSCluster cluster) {

@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -109,13 +110,27 @@ import com.google.common.base.Preconditions;
 @InterfaceStability.Evolving
 public class FSEditLogLoader {
   static final Log LOG = LogFactory.getLog(FSEditLogLoader.class.getName());
-  static final long REPLAY_TRANSACTION_LOG_INTERVAL = 1000; // 1sec
+
+  /** Number of edits to load at each iteration */
+  // TODO: make this configurable?
+  private static final long REPLAY_BATCH_SIZE = 10000;
+
+  /**
+   * The interval between each edits loading. This allows observer
+   * to process read requests in between.
+   * */
+  private static final long REPLAY_BATCH_INTERVAL = 100; // 100 ms
 
   private final FSNamesystem fsNamesys;
   private long lastAppliedTxId;
   /** Total number of end transactions loaded. */
   private int totalEdits = 0;
-  
+
+  private static final long REPLAY_TRANSACTION_LOG_INTERVAL = 1000; // 1sec
+
+  /** The last time a replay progress is logged */
+  private long lastLogTime = 0;
+
   public FSEditLogLoader(FSNamesystem fsNamesys, long lastAppliedTxId) {
     this.fsNamesys = fsNamesys;
     this.lastAppliedTxId = lastAppliedTxId;
@@ -136,19 +151,17 @@ public class FSEditLogLoader {
     StartupProgress prog = NameNode.getStartupProgress();
     Step step = createStartupProgressStep(edits);
     prog.beginStep(Phase.LOADING_EDITS, step);
-    fsNamesys.writeLock();
     try {
       long startTime = monotonicNow();
       FSImage.LOG.info("Start loading edits file " + edits.getName());
       long numEdits = loadEditRecords(edits, false, expectedStartingTxId,
           startOpt, recovery);
-      FSImage.LOG.info("Edits file " + edits.getName() 
-          + " of size " + edits.length() + " edits # " + numEdits 
+      FSImage.LOG.info("Edits file " + edits.getName()
+          + " of size " + edits.length() + " edits # " + numEdits
           + " loaded in " + (monotonicNow()-startTime)/1000 + " seconds");
       return numEdits;
     } finally {
       edits.close();
-      fsNamesys.writeUnlock("loadFSEdits");
       prog.endStep(Phase.LOADING_EDITS, step);
     }
   }
@@ -156,6 +169,42 @@ public class FSEditLogLoader {
   long loadEditRecords(EditLogInputStream in, boolean closeOnExit,
       long expectedStartingTxId, StartupOption startOpt,
       MetaRecoveryContext recovery) throws IOException {
+    long lastTxId = in.getLastTxId();
+    long numTxns = (lastTxId - expectedStartingTxId) + 1;
+    long expectedTxId = expectedStartingTxId;
+    StartupProgress prog = NameNode.getStartupProgress();
+    Step step = createStartupProgressStep(in);
+    prog.setTotal(Phase.LOADING_EDITS, step, numTxns);
+    Counter counter = prog.getCounter(Phase.LOADING_EDITS, step);
+
+    long totalNumEdits = 0;
+    lastLogTime = monotonicNow();
+    try {
+      FSImage.LOG.info("Start loading edit log in a batch size of " + REPLAY_BATCH_SIZE);
+      while (true) {
+        LoadResult p = loadEditRecords(in, expectedStartingTxId,
+            expectedTxId, startOpt, recovery, REPLAY_BATCH_SIZE, counter, numTxns);
+        totalNumEdits += p.numEdits;
+        expectedTxId = p.expectedTxId;
+        if (!p.hasNext) {
+          break;
+        }
+        TimeUnit.MILLISECONDS.sleep(REPLAY_BATCH_INTERVAL);
+      }
+    } catch (InterruptedException e) {
+      throw new IOException("Interrupted between applying edit log ops", e);
+    } finally {
+      if(closeOnExit) {
+        in.close();
+      }
+    }
+    return totalNumEdits;
+  }
+
+  private LoadResult loadEditRecords(EditLogInputStream in,
+      long startTxId, long expectedStartingTxId, StartupOption startOpt,
+      MetaRecoveryContext recovery, long batchSize, Counter counter,
+      long numTxns) throws IOException {
     FSDirectory fsDir = fsNamesys.dir;
 
     EnumMap<FSEditLogOpCodes, Holder<Integer>> opCounts =
@@ -173,22 +222,17 @@ public class FSEditLogLoader {
     
     long expectedTxId = expectedStartingTxId;
     long numEdits = 0;
-    long lastTxId = in.getLastTxId();
-    long numTxns = (lastTxId - expectedStartingTxId) + 1;
-    StartupProgress prog = NameNode.getStartupProgress();
-    Step step = createStartupProgressStep(in);
-    prog.setTotal(Phase.LOADING_EDITS, step, numTxns);
-    Counter counter = prog.getCounter(Phase.LOADING_EDITS, step);
-    long lastLogTime = monotonicNow();
     long lastInodeId = fsNamesys.dir.getLastInodeId();
-    
+    boolean hasMore = true;
+
     try {
-      while (true) {
+      while (numEdits < batchSize) {
         try {
           FSEditLogOp op;
           try {
             op = in.readOp();
             if (op == null) {
+              hasMore = false;
               break;
             }
           } catch (Throwable e) {
@@ -250,7 +294,7 @@ public class FSEditLogLoader {
           }
           // Now that the operation has been successfully decoded and
           // applied, update our bookkeeping.
-          incrOpCount(op.opCode, opCounts, step, counter);
+          incrOpCount(op.opCode, opCounts, counter);
           if (op.hasTransactionId()) {
             lastAppliedTxId = op.getTransactionId();
             expectedTxId = lastAppliedTxId + 1;
@@ -261,7 +305,7 @@ public class FSEditLogLoader {
           if (op.hasTransactionId()) {
             long now = monotonicNow();
             if (now - lastLogTime > REPLAY_TRANSACTION_LOG_INTERVAL) {
-              long deltaTxId = lastAppliedTxId - expectedStartingTxId + 1;
+              long deltaTxId = lastAppliedTxId - startTxId + 1;
               int percent = Math.round((float) deltaTxId / numTxns * 100);
               LOG.info("replaying edit log: " + deltaTxId + "/" + numTxns
                   + " transactions completed. (" + percent + "%)");
@@ -272,18 +316,17 @@ public class FSEditLogLoader {
           totalEdits++;
         } catch (RollingUpgradeOp.RollbackException e) {
           LOG.info("Stopped at OP_START_ROLLING_UPGRADE for rollback.");
+          hasMore = false;
           break;
         } catch (MetaRecoveryContext.RequestStopException e) {
           MetaRecoveryContext.LOG.warn("Stopped reading edit log at " +
               in.getPosition() + "/"  + in.length());
+          hasMore = false;
           break;
         }
       }
     } finally {
       fsNamesys.dir.resetLastInodeId(lastInodeId);
-      if(closeOnExit) {
-        in.close();
-      }
       fsDir.writeUnlock();
       fsNamesys.writeUnlock("loadEditRecords");
 
@@ -295,9 +338,21 @@ public class FSEditLogLoader {
         dumpOpCounts(opCounts);
       }
     }
-    return numEdits;
+    return new LoadResult(numEdits, expectedTxId, hasMore);
   }
-  
+
+  private static class LoadResult {
+    final long numEdits;
+    final long expectedTxId;
+    final boolean hasNext;
+
+    LoadResult(long numEdits, long expectedTxId, boolean hasNext) {
+      this.numEdits = numEdits;
+      this.expectedTxId = expectedTxId;
+      this.hasNext = hasNext;
+    }
+  }
+
   // allocate and update last allocated inode id
   private long getAndUpdateLastInodeId(long inodeIdFromOp, int logVersion,
       long lastInodeId) throws IOException {
@@ -1093,8 +1148,7 @@ public class FSEditLogLoader {
   }
 
   private void incrOpCount(FSEditLogOpCodes opCode,
-      EnumMap<FSEditLogOpCodes, Holder<Integer>> opCounts, Step step,
-      Counter counter) {
+      EnumMap<FSEditLogOpCodes, Holder<Integer>> opCounts, Counter counter) {
     Holder<Integer> holder = opCounts.get(opCode);
     if (holder == null) {
       holder = new Holder<Integer>(1);

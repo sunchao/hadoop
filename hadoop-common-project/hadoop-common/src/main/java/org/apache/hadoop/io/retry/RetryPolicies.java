@@ -669,7 +669,8 @@ public class RetryPolicies {
           e instanceof UnknownHostException ||
           e instanceof StandbyException ||
           e instanceof ConnectTimeoutException ||
-          isWrappedStandbyException(e)) {
+          isWrappedStandbyException(e) ||
+          isStandbyException(e)) {
         return new RetryAction(RetryAction.RetryDecision.FAILOVER_AND_RETRY,
             getFailoverOrRetrySleepTime(failovers));
       } else if (e instanceof RetriableException
@@ -733,5 +734,19 @@ public class RetryPolicies {
         RetriableException.class);
     return unwrapped instanceof RetriableException ? 
         (RetriableException) unwrapped : null;
+  }
+
+  private static boolean isStandbyException(Exception ex) {
+    Throwable cause = ex.getCause();
+    if (cause != null) {
+      Throwable cause2 = cause.getCause();
+      if (cause2 instanceof RemoteException) {
+        RemoteException remoteException = (RemoteException)cause2;
+        IOException unwrapRemoteException =
+                remoteException.unwrapRemoteException();
+        return unwrapRemoteException instanceof StandbyException;
+      }
+    }
+    return false;
   }
 }

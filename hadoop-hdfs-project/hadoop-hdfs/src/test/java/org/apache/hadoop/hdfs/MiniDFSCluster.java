@@ -46,6 +46,7 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SHARED_EDITS_DIR
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICES;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICE_ID;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_REPLICATION_KEY;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_HA_OBSERVER_NAMENODES_KEY_PREFIX;
 import static org.apache.hadoop.hdfs.server.common.Util.fileAsURI;
 
 import java.io.File;
@@ -105,7 +106,6 @@ import org.apache.hadoop.hdfs.server.datanode.SecureDataNodeStarter.SecureResour
 import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
-import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetUtil;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsVolumeImpl;
 import org.apache.hadoop.hdfs.server.namenode.EditLogFileOutputStream;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
@@ -459,7 +459,9 @@ public class MiniDFSCluster implements AutoCloseable {
     assert builder.storageTypes == null ||
            builder.storageTypes.length == builder.numDataNodes;
     final int numNameNodes = builder.nnTopology.countNameNodes();
+    final int numObservers = builder.nnTopology.countObservers();
     LOG.info("starting cluster: numNameNodes=" + numNameNodes
+        + ", numObservers=" + numObservers
         + ", numDataNodes=" + builder.numDataNodes);
 
     this.storagesPerDatanode = builder.storagesPerDatanode;
@@ -941,7 +943,7 @@ public class MiniDFSCluster implements AutoCloseable {
    * Do the rest of the NN configuration for things like shared edits,
    * as well as directory formatting, etc. for a single nameservice
    * @param nnCounter the count of the number of namenodes already configured/started. Also,
-   *                  acts as the <i>index</i> to the next NN to start (since indicies start at 0).
+   *                  acts as the <i>index</i> to the next NN to start (since indices start at 0).
    * @throws IOException
    */
   private void configureNameService(MiniDFSNNTopology.NSConf nameservice, int nsCounter,
@@ -962,10 +964,13 @@ public class MiniDFSCluster implements AutoCloseable {
       FileUtil.fullyDelete(new File(sharedEditsUri));
     }
 
+    // create a list containing both ordinary and observer NNs.
+    List<MiniDFSNNTopology.NNConf> allNNs = nameservice.getNNs();
+
     // Now format first NN and copy the storage directory from that node to the others.
     int nnIndex = nnCounter;
     Collection<URI> prevNNDirs = null;
-    for (NNConf nn : nameservice.getNNs()) {
+    for (NNConf nn : allNNs) {
       initNameNodeConf(conf, nsId, nsCounter, nn.getNnId(), manageNameDfsDirs,
           manageNameDfsDirs,  nnIndex);
       Collection<URI> namespaceDirs = FSNamesystem.getNamespaceDirs(conf);
@@ -1019,7 +1024,9 @@ public class MiniDFSCluster implements AutoCloseable {
     for (NNConf nn : nameservice.getNNs()) {
       initNameNodeConf(conf, nsId, nsCounter, nn.getNnId(), manageNameDfsDirs,
           enableManagedDfsDirsRedundancy, nnIndex++);
-      NameNodeInfo info = createNameNode(conf, false, operation,
+      // Observer NN always use StartupOption.OBSERVER as startup configuration.
+      StartupOption so = nn.getIsObserver() ? StartupOption.OBSERVER : operation;
+      NameNodeInfo info = createNameNode(conf, false, so,
           clusterId, nsId, nn.getNnId());
 
       // Record the last namenode uri
@@ -1028,6 +1035,7 @@ public class MiniDFSCluster implements AutoCloseable {
             info.conf.get(FS_DEFAULT_NAME_KEY);
       }
     }
+
     if (!federation && lastDefaultFileSystem != null) {
       // Set the default file system to the actual bind address of NN.
       conf.set(FS_DEFAULT_NAME_KEY, lastDefaultFileSystem);
@@ -1078,10 +1086,11 @@ public class MiniDFSCluster implements AutoCloseable {
       // need to have - have to do this a priori before starting
       // *any* of the NNs, so they know to come up in standby.
       List<String> nnIds = Lists.newArrayList();
+      List<String> obIds = Lists.newArrayList();
       // Iterate over the NNs in this nameservice
       for (NNConf nn : nameservice.getNNs()) {
         nnIds.add(nn.getNnId());
-
+        if (nn.getIsObserver()) obIds.add(nn.getNnId());
         initNameNodeAddress(conf, nameservice.getId(), nn);
       }
 
@@ -1091,6 +1100,8 @@ public class MiniDFSCluster implements AutoCloseable {
         conf.set(DFSUtil.addKeySuffixes(DFS_HA_NAMENODES_KEY_PREFIX, nameservice.getId()), Joiner
             .on(",").join(nnIds));
       }
+      conf.set(DFSUtil.addKeySuffixes(DFS_HA_OBSERVER_NAMENODES_KEY_PREFIX, nameservice.getId()),
+          Joiner.on(",").join(obIds));
     }
   }
   
@@ -1103,9 +1114,34 @@ public class MiniDFSCluster implements AutoCloseable {
     return fileAsURI(new File(baseDir, "shared-edits-" +
         minNN + "-through-" + maxNN));
   }
-  
+
+  /**
+   * Return namenodes for all nameservices configured. Note this doesn't
+   * include observer namenodes.
+   * TODO: should we include observer namenodes?
+   */
   public NameNodeInfo[] getNameNodeInfos() {
-    return this.namenodes.values().toArray(new NameNodeInfo[0]);
+    return filterNameNodeInfos(this.namenodes.values());
+  }
+
+  /**
+   * @param nsIndex index of the namespace id to check
+   * @return all the observer namenodes bound to the given namespace index
+   */
+  public NameNodeInfo[] getObserverNameNodeInfos(int nsIndex) {
+    int i = 0;
+    for (String ns : this.namenodes.keys()) {
+      if (i++ == nsIndex) {
+        List<NameNodeInfo> result = new ArrayList<>();
+        for (NameNodeInfo nn : this.namenodes.get(ns)) {
+          if (nn.startOpt == StartupOption.OBSERVER) {
+            result.add(nn);
+          }
+        }
+        return result.toArray(new NameNodeInfo[0]);
+      }
+    }
+    return null;
   }
 
   /**
@@ -1116,7 +1152,7 @@ public class MiniDFSCluster implements AutoCloseable {
     int i = 0;
     for (String ns : this.namenodes.keys()) {
       if (i++ == nsIndex) {
-        return this.namenodes.get(ns).toArray(new NameNodeInfo[0]);
+        return filterNameNodeInfos(this.namenodes.get(ns));
       }
     }
     return null;
@@ -1129,12 +1165,24 @@ public class MiniDFSCluster implements AutoCloseable {
   public NameNodeInfo[] getNameNodeInfos(String nameservice) {
     for (String ns : this.namenodes.keys()) {
       if (nameservice.equals(ns)) {
-        return this.namenodes.get(ns).toArray(new NameNodeInfo[0]);
+        return filterNameNodeInfos(this.namenodes.get(ns));
       }
     }
     return null;
   }
 
+  /**
+   * Filter out all observer namenodes from 'namenodeInfos'.
+   */
+  private NameNodeInfo[] filterNameNodeInfos(Collection<NameNodeInfo> namenodeInfos) {
+    List<NameNodeInfo> result = new ArrayList<>();
+    for (NameNodeInfo nn : namenodeInfos) {
+      if (nn.startOpt != StartupOption.OBSERVER) {
+        result.add(nn);
+      }
+    }
+    return result.toArray(new NameNodeInfo[0]);
+  }
 
   private void initNameNodeConf(Configuration conf, String nameserviceId, int nsIndex, String nnId,
       boolean manageNameDfsDirs, boolean enableManagedDfsDirsRedundancy, int nnIndex)
@@ -1650,7 +1698,6 @@ public class MiniDFSCluster implements AutoCloseable {
     }
     this.numDataNodes += numDataNodes;
     waitActive();
-
     
     setDataNodeStorageCapacities(
         curDatanodesNum,
@@ -3074,10 +3121,26 @@ public class MiniDFSCluster implements AutoCloseable {
   /**
    * Add a namenode to a federated cluster and start it. Configuration of
    * datanodes in the cluster is refreshed to register with the new namenode.
-   * 
-   * @return newly started namenode
    */
   public void addNameNode(Configuration conf, int namenodePort)
+      throws IOException {
+    addNameNode(conf, namenodePort, false);
+  }
+
+  /**
+   * Add a observer namenode to a federated cluster and start it. Configuration of
+   * datanodes in the cluster is refreshed to register with the new namenode.
+   */
+  public void addObserver(Configuration conf, int namenodePort)
+      throws IOException {
+    addNameNode(conf, namenodePort, true);
+  }
+
+  /**
+   * Add a namenode to a federated cluster and start it. Configuration of
+   * datanodes in the cluster is refreshed to register with the new namenode.
+   */
+  public void addNameNode(Configuration conf, int namenodePort, boolean observer)
       throws IOException {
     if(!federation)
       throw new IOException("cannot add namenode to non-federated cluster");
@@ -3095,8 +3158,9 @@ public class MiniDFSCluster implements AutoCloseable {
     // figure out the current number of NNs
     NameNodeInfo[] infos = this.getNameNodeInfos(nameserviceId);
     int nnIndex = infos == null ? 0 : infos.length;
+    StartupOption operation = observer ? StartupOption.OBSERVER : null;
     initNameNodeConf(conf, nameserviceId, nameServiceIndex, nnId, true, true, nnIndex);
-    NameNodeInfo info = createNameNode(conf, true, null, null, nameserviceId, nnId);
+    createNameNode(conf, true, operation, null, nameserviceId, nnId);
 
     // Refresh datanodes with the newly started namenode
     for (DataNodeProperties dn : dataNodes) {

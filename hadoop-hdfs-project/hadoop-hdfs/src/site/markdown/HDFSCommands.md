@@ -138,6 +138,7 @@ Runs the HDFS filesystem checking utility. See [fsck](./HdfsUserGuide.html#fsck)
 Usage:
 
        hdfs getconf -namenodes
+       hdfs getconf -observers
        hdfs getconf -secondaryNameNodes
        hdfs getconf -backupNodes
        hdfs getconf -includeFile
@@ -148,6 +149,7 @@ Usage:
 | COMMAND\_OPTION | Description |
 |:---- |:---- |
 | `-namenodes` | gets list of namenodes in the cluster. |
+| `-observers` | gets list of observer namenodes in the cluster. |
 | `-secondaryNameNodes` | gets list of secondary namenodes in the cluster. |
 | `-backupNodes` | gets list of backup nodes in the cluster. |
 | `-includeFile` | gets the include file path that defines the datanodes that can join the cluster. |

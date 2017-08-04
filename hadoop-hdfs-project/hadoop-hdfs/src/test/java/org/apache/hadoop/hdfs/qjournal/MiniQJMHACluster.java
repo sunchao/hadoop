@@ -47,6 +47,7 @@ public class MiniQJMHACluster {
     private final Configuration conf;
     private StartupOption startOpt = null;
     private int numNNs = 2;
+    private int numObs = 0;
     private final MiniDFSCluster.Builder dfsBuilder;
 
     public Builder(Configuration conf) {
@@ -72,6 +73,25 @@ public class MiniQJMHACluster {
       this.numNNs = nns;
       return this;
     }
+
+    public Builder setNumObservers(int obs) {
+      this.numObs = obs;
+      return this;
+    }
+  }
+
+  public static MiniDFSNNTopology createDefaultTopology(int nns, int obs, int startingPort) {
+    MiniDFSNNTopology.NSConf nameservice = new MiniDFSNNTopology.NSConf(NAMESERVICE);
+    for (int i = 0; i < nns; i++) {
+      nameservice.addNN(new MiniDFSNNTopology.NNConf("nn" + i).setIpcPort(startingPort++)
+          .setHttpPort(startingPort++));
+    }
+    for (int i = 0; i < obs; i++) {
+      nameservice.addNN(new MiniDFSNNTopology.NNConf("ob" + (i + nns)).setIpcPort(startingPort++)
+          .setHttpPort(startingPort++).setIsObserver());
+    }
+
+    return new MiniDFSNNTopology().addNameservice(nameservice);
   }
 
   public static MiniDFSNNTopology createDefaultTopology(int nns, int startingPort) {
@@ -104,7 +124,7 @@ public class MiniQJMHACluster {
         URI journalURI = journalCluster.getQuorumJournalURI(NAMESERVICE);
 
         // start cluster with specified NameNodes
-        MiniDFSNNTopology topology = createDefaultTopology(builder.numNNs, basePort);
+        MiniDFSNNTopology topology = createDefaultTopology(builder.numNNs, builder.numObs, basePort);
 
         initHAConf(journalURI, builder.conf, basePort, builder.numNNs);
 
@@ -151,7 +171,7 @@ public class MiniQJMHACluster {
     }
 
     // use standard failover configurations
-    HATestUtil.setFailoverConfigurations(conf, NAMESERVICE, nns);
+    HATestUtil.setFailoverConfigurations(conf, NAMESERVICE, nns.size(), nns);
     return conf;
   }
 

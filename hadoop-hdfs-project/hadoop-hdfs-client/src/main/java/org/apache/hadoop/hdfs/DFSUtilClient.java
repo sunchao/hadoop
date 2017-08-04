@@ -18,6 +18,7 @@
 package org.apache.hadoop.hdfs;
 
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_HA_OBSERVER_NAMENODES_KEY_PREFIX;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_NAMESERVICES;
 
 import java.io.IOException;
@@ -128,16 +129,50 @@ public class DFSUtilClient {
 
   /**
    * Namenode HighAvailability related configuration.
-   * Returns collection of namenode Ids from the configuration. One logical id
-   * for each namenode in the in the HA setup.
+   * Returns collection of namenode Ids (including observer NNs) from the configuration.
+   * One logical id for each namenode in the HA setup.
    *
    * @param conf configuration
-   * @param nsId the nameservice ID to look at, or null for non-federated
-   * @return collection of namenode Ids
+   * @param nsId the nameservice ID to look at, or null for
+   *             non-federated
+   * @return collection of namenode Ids, including observer namenodes.
    */
   public static Collection<String> getNameNodeIds(Configuration conf, String nsId) {
     String key = addSuffix(DFS_HA_NAMENODES_KEY_PREFIX, nsId);
     return conf.getTrimmedStringCollection(key);
+  }
+
+  /**
+   * Returns collection of observer namenode Ids from the configuration.
+   * One logical id for each observer in the HA setup.
+   *
+   * @param conf configuration
+   * @param nsId the nameservice ID to look at, or null for non-federated
+   * @return collection of observer namenode Ids
+   */
+  public static Collection<String> getObserverNameNodeIds(Configuration conf, String nsId) {
+    String key = addSuffix(DFS_HA_OBSERVER_NAMENODES_KEY_PREFIX, nsId);
+    return conf.getTrimmedStringCollection(key);
+  }
+
+  /**
+   * Namenode HighAvailability related configuration.
+   * Returns collection of namenode Ids from the configuration, excluding observer namenodes.
+   * One logical id for each namenode in the HA setup.
+   *
+   * @param conf configuration
+   * @param nsId the nameservice ID to look at, or null for non-federated
+   * @return collection of namenode Ids, excluding observer namenodes.
+   */
+  public static Collection<String> getNameNodeIdsExcludingObservers(
+      Configuration conf, String nsId) {
+    Collection<String> allNNIds = getNameNodeIds(conf, nsId);
+    Collection<String> observerNNIds = getObserverNameNodeIds(conf, nsId);
+    if (!allNNIds.containsAll(observerNNIds)) {
+      throw new IllegalArgumentException("Observer NameNodes should be part of all NameNodes");
+    }
+    allNNIds.removeAll(observerNNIds);
+    return allNNIds;
   }
 
   /** Add non empty and non null suffix to a key */
@@ -152,15 +187,30 @@ public class DFSUtilClient {
 
   /**
    * Returns list of InetSocketAddress corresponding to HA NN RPC addresses from
-   * the configuration.
+   * the configuration. Note this does not include the NN RPC addresses from
+   * observer namenodes.
    *
    * @param conf configuration
-   * @return list of InetSocketAddresses
+   * @return list of InetSocketAddresse, not including those of observer NNs.
    */
   public static Map<String, Map<String, InetSocketAddress>> getHaNnRpcAddresses(
       Configuration conf) {
     return DFSUtilClient.getAddresses(conf, null,
-      HdfsClientConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY);
+        HdfsClientConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY);
+  }
+
+  /**
+   * Returns list of InetSocketAddress corresponding to observer namenode RPC
+   * addresses from the configuration.
+   *
+   * @param conf configuration
+   * @return list of InetSocketAddresses for observer namenodes
+   */
+  public static Map<String, Map<String, InetSocketAddress>> getObserverRpcAddresses(
+      Configuration conf) {
+    // Observer namenodes share the same RPC address key with ordinary namenodes
+    return DFSUtilClient.getObserverAddresses(conf, null,
+        HdfsClientConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY);
   }
 
   /**
@@ -321,6 +371,15 @@ public class DFSUtilClient {
   }
 
   /**
+   * Enum for selecting different types of namenodes (e.g., namenode, observers)
+   */
+  enum NameNodeType {
+    NAMENODE,
+    OBSERVER,
+    ALL
+  }
+
+  /**
    * Returns the configured address for all NameNodes in the cluster.
    * @param conf configuration
    * @param defaultAddress default address to return in case key is not found.
@@ -329,12 +388,34 @@ public class DFSUtilClient {
    */
   static Map<String, Map<String, InetSocketAddress>> getAddresses(
       Configuration conf, String defaultAddress, String... keys) {
-    Collection<String> nameserviceIds = getNameServiceIds(conf);
-    return getAddressesForNsIds(conf, nameserviceIds, defaultAddress, keys);
+    return getAddressesInternal(conf, defaultAddress, NameNodeType.NAMENODE, keys);
   }
 
   /**
-   * Returns the configured address for all NameNodes in the cluster.
+   * Returns the configured address for all Observer NameNodes in the cluster.
+   * @param conf configuration
+   * @param defaultAddress default address to return in case key is not found.
+   * @param keys Set of keys to look for in the order of preference
+   * @return a map(nameserviceId to map(namenodeId to InetSocketAddress))
+   */
+  static Map<String, Map<String, InetSocketAddress>> getObserverAddresses(
+      Configuration conf, String defaultAddress, String... keys) {
+    return getAddressesInternal(conf, defaultAddress, NameNodeType.OBSERVER, keys);
+  }
+
+  /**
+   * Internal function to get configured addresses for a particular namenode
+   * type 'type'.
+   */
+  static Map<String, Map<String, InetSocketAddress>> getAddressesInternal(
+      Configuration conf, String defaultAddress, NameNodeType type, String... keys) {
+    Collection<String> nameserviceIds = getNameServiceIds(conf);
+    return getAddressesForNsIdsInternal(conf, nameserviceIds, defaultAddress, type, keys);
+  }
+
+  /**
+   * Returns the configured address for both ordinary (active/standby) namenodes
+   * and observer namenodes in the cluster.
    * @param conf configuration
    * @param defaultAddress default address to return in case key is not found.
    * @param keys Set of keys to look for in the order of preference
@@ -344,12 +425,23 @@ public class DFSUtilClient {
   static Map<String, Map<String, InetSocketAddress>> getAddressesForNsIds(
       Configuration conf, Collection<String> nsIds, String defaultAddress,
       String... keys) {
+    return getAddressesForNsIdsInternal(
+        conf, nsIds, defaultAddress, NameNodeType.ALL, keys);
+  }
+
+  /**
+   * Internal function to get configured addresses for namenodes of type 'type' and
+   * nameservices with IDs 'nsIds'.
+   */
+  static Map<String, Map<String, InetSocketAddress>> getAddressesForNsIdsInternal(
+      Configuration conf, Collection<String> nsIds, String defaultAddress,
+      NameNodeType type, String... keys) {
     // Look for configurations of the form <key>[.<nameserviceId>][.<namenodeId>]
     // across all of the configured nameservices and namenodes.
     Map<String, Map<String, InetSocketAddress>> ret = Maps.newLinkedHashMap();
     for (String nsId : emptyAsSingletonNull(nsIds)) {
       Map<String, InetSocketAddress> isas =
-          getAddressesForNameserviceId(conf, nsId, defaultAddress, keys);
+          getAddressesForNameserviceIdInternal(conf, nsId, defaultAddress, type, keys);
       if (!isas.isEmpty()) {
         ret.put(nsId, isas);
       }
@@ -359,7 +451,27 @@ public class DFSUtilClient {
 
   static Map<String, InetSocketAddress> getAddressesForNameserviceId(
       Configuration conf, String nsId, String defaultValue, String... keys) {
-    Collection<String> nnIds = getNameNodeIds(conf, nsId);
+    return getAddressesForNameserviceIdInternal(
+        conf, nsId, defaultValue, NameNodeType.NAMENODE, keys);
+  }
+
+  private static Map<String, InetSocketAddress> getAddressesForNameserviceIdInternal(
+      Configuration conf, String nsId, String defaultValue,
+      NameNodeType type, String... keys) {
+    Collection<String> nnIds;
+    switch (type) {
+      case NAMENODE:
+        nnIds = getNameNodeIdsExcludingObservers(conf, nsId);
+        break;
+      case OBSERVER:
+        nnIds = getObserverNameNodeIds(conf, nsId);
+        break;
+      case ALL:
+        nnIds = getNameNodeIds(conf, nsId);
+        break;
+      default:
+        throw new IllegalArgumentException("Invalid namenode type: " + type.name());
+    }
     Map<String, InetSocketAddress> ret = Maps.newHashMap();
     for (String nnId : emptyAsSingletonNull(nnIds)) {
       String suffix = concatSuffixes(nsId, nnId);

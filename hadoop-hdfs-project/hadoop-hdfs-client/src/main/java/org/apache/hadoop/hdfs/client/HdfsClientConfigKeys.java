@@ -71,6 +71,7 @@ public interface HdfsClientConfigKeys {
   int     DFS_NAMENODE_HTTPS_PORT_DEFAULT = 50470;
   String  DFS_NAMENODE_HTTPS_ADDRESS_KEY = "dfs.namenode.https-address";
   String DFS_HA_NAMENODES_KEY_PREFIX = "dfs.ha.namenodes";
+  String DFS_HA_OBSERVER_NAMENODES_KEY_PREFIX = "dfs.ha.observer.namenodes";
   String  DFS_WEBHDFS_ENABLED_KEY = "dfs.webhdfs.enabled";
   boolean DFS_WEBHDFS_ENABLED_DEFAULT = true;
   String  DFS_NAMENODE_HTTP_PORT_KEY = "dfs.http.port";
@@ -117,6 +118,9 @@ public interface HdfsClientConfigKeys {
   String  DFS_CLIENT_DATANODE_RESTART_TIMEOUT_KEY =
       "dfs.client.datanode-restart.timeout";
   long    DFS_CLIENT_DATANODE_RESTART_TIMEOUT_DEFAULT = 30;
+  String DFS_CLIENT_ENABLE_STALE_READ =
+      "dfs.client.enable.stale-read";
+  boolean DFS_CLIENT_ENABLE_STALE_READ_DEFAULT = false;
   // Much code in hdfs is not yet updated to use these keys.
   // the initial delay (unit is ms) for locateFollowingBlock, the delay time
   // will increase exponentially(double) for each retry.
