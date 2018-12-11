@@ -20,7 +20,7 @@ Consistent Reads from HDFS Observer NameNode
 Purpose
 --------
 
-This guids provides an overview of the HDFS Observer NameNode feature
+This guide provides an overview of the HDFS Observer NameNode feature
 and how to configure/install it in a typical HA-enabled cluster. For a
 detailed technical design overview, please check the doc attached to
 HDFS-12943.
@@ -28,11 +28,11 @@ HDFS-12943.
 Background
 -----------
 
-In a HA enabled HDFS cluster (for more information, check
+In a HA-enabled HDFS cluster (for more information, check
 [HDFSHighAvailabilityWithQJM](./HDFSHighAvailabilityWithQJM.md)), there
 is a single Active NameNode and one or more Standby NameNode(s). The
 Active NameNode is responsible for serving all client requests, while
-Standby NameNode just keep the update-to-date information regarding the
+Standby NameNode just keep the up-to-date information regarding the
 namespace, by tailing edit logs from JournalNodes, as well as block
 location information, by receiving block reports from all the DataNodes.
 One drawback of this architecture is that the Active NameNode could be a
@@ -42,7 +42,7 @@ a busy cluster.
 The Consistent Reads from HDFS Observer NameNode feature addresses the
 above by introducing a new type of NameNode called **Observer
 NameNode**. Similar to Standby NameNode, Observer NameNode keeps itself
-update-to-date regarding the namespace and block location information.
+up-to-date regarding the namespace and block location information.
 In addition, it also has the ability to serve consistent reads, like
 Active NameNode. Since read requests are the majority in a typical
 environment, this can help to load balancing the NameNode traffic and
@@ -58,12 +58,15 @@ directly between active and observer.
 
 To ensure read-after-write consistency within a single client, a state
 ID, which is implemented using transaction ID within NameNode, is
-introduced in RPC headers. When receiving a RPC request from a client,
-observer will ensure its own transaction ID has caught up with the
-request's state ID, before serving the request.
+introduced in RPC headers. When a client performs write through Active
+NameNode, it updates its state ID using the latest transaction ID from
+the NameNode. When performing a subsequent read, the client passes this
+state ID to Observe NameNode, which will then check against its own
+transaction ID, and will ensure its own transaction ID has caught up
+with the request's state ID, before serving the read request.
 
-Edit log tailing is critical for Observer NameNode as it directly affect
-the latency between when a transaction is applied in Action NameNode and
+Edit log tailing is critical for Observer NameNode as it directly affects
+the latency between when a transaction is applied in Active NameNode and
 when it is applied in the Observer NameNode. A new edit log tailing
 mechanism, named "Edit Tailing Fast-Path", is introduced to
 significantly reduce this latency. This is built on top of the existing
@@ -71,10 +74,14 @@ in-progress edit log tailing feature, with further improvements such as
 RPC-based tailing instead of HTTP, a in-memory cache on the JournalNode,
 etc. For more details, please see the design doc attached to HDFS-13150.
 
-A new client-side proxy provider, ObserverReadProxyProvider, is also
-introduced. When receiving a client read request, the proxy provider
-will first try each Observer NameNode available in the cluster, and only
-fall back to Active NameNode if all of the former failed.
+New client-side proxy providers are also introduced.
+ObserverReadProxyProvider, which inherits the existing
+ConfiguredFailoverProxyProvider, should be used to replace the latter to
+enable reads from Observer NameNode. When submitting a client read
+request, the proxy provider will first try each Observer NameNode
+available in the cluster, and only fall back to Active NameNode if all
+of the former failed. Similarly, ObserverReadProxyProviderWithIPFailover
+is introduced to replace IPFailoverProxyProvider in a IP failover setup.
 
 Deployment
 -----------
@@ -92,6 +99,11 @@ few configurations to your **hdfs-site.xml**:
    cache in JournalNodes, and so on. It is disabled by default, but is
    **required to be turned on** for the Observer NameNode feature.
 
+        <property>
+          <name>dfs.ha.tail-edits.in-progress</name>
+          <value>true</value>
+        </property>
+
 *  **dfs.journalnode.edit-cache-size.bytes** - the in-memory cache size,
    in bytes, on the JournalNodes.
 
@@ -100,6 +112,10 @@ few configurations to your **hdfs-site.xml**:
    RPC-based tailing. This is only effective when
    dfs.ha.tail-edits.in-progress is turned on.
 
+        <property>
+          <name>dfs.journalnode.edit-cache-size.bytes</name>
+          <value>1048576</value>
+        </property>
 
 ### New administrative command
 
@@ -125,8 +141,10 @@ have ZKFC running.
 
 To enable observer support, first you'll need a HA-enabled HDFS cluster
 with more than 2 namenodes. Then, you need to transition Standby
-NameNode(s) into the observer state. An example setup would be running 3
-namenodes in the cluster, one active, one standby and one observer.
+NameNode(s) into the observer state. An minimum setup would be running 3
+namenodes in the cluster, one active, one standby and one observer. For
+large HDFS clusters we recommend running two or more Observers depending
+on the intensity of read requests and HA requirements.
 
 Note that currently Observer NameNode doesn't integrate fully when
 automatic failover is enabled. If the
@@ -141,7 +159,7 @@ In future, this restriction will be lifted.
 
 ### Client configuration
 
-Clients who wishes to use Observer NameNode for read accesses can
+Clients who wish to use Observer NameNode for read accesses can
 specify the ObserverReadProxyProvider class for proxy provider
 implementation, in the client-side **hdfs-site.xml** configuration file:
 
@@ -149,3 +167,7 @@ implementation, in the client-side **hdfs-site.xml** configuration file:
         <name>dfs.client.failover.proxy.provider.<nameservice></name>
         <value>org.apache.hadoop.hdfs.server.namenode.ha.ObserverReadProxyProvider</value>
     </property>
+
+Clients who do not wish to use Observer NameNode can still use the
+existing ConfiguredFailoverProxyProvider and should not see any behavior
+change.
