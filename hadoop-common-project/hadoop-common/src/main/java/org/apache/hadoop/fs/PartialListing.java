@@ -28,7 +28,7 @@ import java.util.List;
 
 /**
  * A partial listing of the children of a parent directory. Since it is a
- * partial listing, multiple ListingBatches may need to be combined to obtain
+ * partial listing, multiple listing batches may need to be combined to obtain
  * the full listing of a parent directory.
  * <p/>
  * ListingBatch behaves similar to a Future, in that getting the result via

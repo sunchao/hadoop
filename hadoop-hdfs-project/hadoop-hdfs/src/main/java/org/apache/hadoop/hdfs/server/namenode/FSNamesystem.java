@@ -132,6 +132,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.file.Files;
+import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -612,6 +613,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
    */
   private final Object metaSaveLock = new Object();
 
+  private final MessageDigest digest;
+
   /**
    * Notify that loading of this FSDirectory is complete, and
    * it is imageLoaded for use
@@ -835,6 +838,12 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
             + DFS_CHECKSUM_TYPE_KEY + ": " + checksumTypeStr);
       }
 
+      try {
+        digest = MessageDigest.getInstance("MD5");
+      } catch (NoSuchAlgorithmException e) {
+        throw new IOException("Algorithm 'MD5' not found");
+      }
+
       this.serverDefaults = new FsServerDefaults(
           conf.getLongBytes(DFS_BLOCK_SIZE_KEY, DFS_BLOCK_SIZE_DEFAULT),
           conf.getInt(DFS_BYTES_PER_CHECKSUM_KEY, DFS_BYTES_PER_CHECKSUM_DEFAULT),
@@ -917,7 +926,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       alwaysUseDelegationTokensForTests = conf.getBoolean(
           DFS_NAMENODE_DELEGATION_TOKEN_ALWAYS_USE_KEY,
           DFS_NAMENODE_DELEGATION_TOKEN_ALWAYS_USE_DEFAULT);
-      
+
       this.dtSecretManager = createDelegationTokenSecretManager(conf);
       this.dir = new FSDirectory(this, conf);
       this.snapshotManager = new SnapshotManager(conf, dir);
@@ -3945,17 +3954,14 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   }
 
   public byte[] getSrcPathsHash(String[] srcs) {
-    MessageDigest md;
-    try {
-      md = MessageDigest.getInstance("MD5");
-    } catch (NoSuchAlgorithmException e) {
-      throw new RuntimeException(e);
+    synchronized (digest) {
+      for (String src : srcs) {
+        digest.update(src.getBytes(Charsets.UTF_8));
+      }
+      byte[] result = digest.digest();
+      digest.reset();
+      return result;
     }
-
-    for (String src: srcs) {
-      md.update(src.getBytes(Charsets.UTF_8));
-    }
-    return md.digest();
   }
 
   BatchedDirectoryListing getBatchedListing(String[] srcs, byte[] startAfter,
@@ -4084,6 +4090,57 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       logAuditEvent(true, operationName, srcs[i]);
     }
     return bdl;
+  }
+
+  private HdfsPartialListing[] doBatchListing(
+      String[] srcs, int srcsIndex, byte[] indexStartAfter,
+      boolean needLocation) throws IOException {
+    checkOperation(NameNode.OperationCategory.READ);
+
+    final FSPermissionChecker pc = getPermissionChecker();
+    final String operationName = "listStatus";
+
+    LinkedHashMap<Integer, HdfsPartialListing> listings =
+        Maps.newLinkedHashMap();
+    int numEntries = 0;
+    for (; srcsIndex < srcs.length; srcsIndex++) {
+      String src = srcs[srcsIndex];
+      HdfsPartialListing listing;
+      try {
+        DirectoryListing dirListing =
+            getListingInt(dir, pc, src, indexStartAfter, needLocation);
+        if (dirListing == null) {
+          throw new FileNotFoundException("Path " + src + " does not exist");
+        }
+        listing = new HdfsPartialListing(
+            srcsIndex, Lists.newArrayList(dirListing.getPartialListing()));
+        numEntries += listing.getPartialListing().size();
+      } catch (Exception e) {
+        if (e instanceof AccessControlException) {
+          logAuditEvent(false, operationName, src);
+        }
+        listing = new HdfsPartialListing(
+            srcsIndex,
+            new RemoteException(
+                e.getClass().getCanonicalName(),
+                e.getMessage()));
+        LOG.info("Exception listing src {}", src, e);
+      }
+
+      listings.put(srcsIndex, listing);
+      // Null out the indexStartAfter after the first time.
+      // If we get a partial result, we're done iterating because we're also
+      // over the list limit.
+      if (indexStartAfter.length != 0) {
+        indexStartAfter = new byte[0];
+      }
+      // Terminate if we've reached the maximum listing size
+      if (numEntries >= dir.getListLimit()) {
+        break;
+      }
+    }
+
+    return listings.values().toArray(new HdfsPartialListing[]{});
   }
 
   /////////////////////////////////////////////////////////

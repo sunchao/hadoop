@@ -698,6 +698,7 @@ public interface ClientProtocol {
       boolean needLocation) throws IOException;
 
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   BatchedDirectoryListing getBatchedListing(
       String[] srcs,
       byte[] startAfter,
